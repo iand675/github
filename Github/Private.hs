@@ -51,12 +51,15 @@ doHttps method url body = do
       requestBody = fromMaybe (RequestBodyBS $ BS.pack "") body
       queryString = BS.pack $ fromMaybe "" $ uriQuery uri
       request = def { method = method
-                    , secure = True
+                    , secure = False
                     , host = BS.pack host
                     , port = 443
                     , path = BS.pack $ uriPath uri
                     , requestBody = requestBody
                     , queryString = queryString
+                    , requestHeaders = [
+                       Types.headerAccept "*/*"
+                      ,Types.headerContentType "application/x-www-form-urlencoded" ]
                     }
 
   (getResponse request >>= return . Right) `catch` (return . Left)
