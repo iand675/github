@@ -455,6 +455,37 @@ instance FromJSON DetailedUser where
                  <*> o .: "login"
   parseJSON _ = fail "Could not build a DetailedUser"
 
+instance FromJSON GistDetail where
+  parseJSON (Object o) =
+    GistDetail <$> o .: "comments"
+               <*> o .: "updated_at"
+               <*> o .: "git_push_url"
+               <*> o .: "user"
+               <*> o .: "public"
+               <*> o .: "html_url"
+               <*> o .: "created_at"
+               <*> o .: "description"
+               <*> o .: "files"
+               <*> o .: "git_pull_url"
+               <*> o .: "id"
+               <*> o .: "url"
+               <*> o .: "history"
+  parseJSON _ = fail "Could not build a GistDetail"
+
+instance FromJSON GistHistory where
+  parseJSON (Object o) =
+    GistHistory <$> o .: "user"
+                <*> o .: "version"
+                <*> o .: "change_status"
+                <*> o .: "commited_at"
+                <*> o .: "url"
+  parseJSON _ = fail "Could not build a GistHistory"
+
+instance FromJSON ChangeStatus where
+  parseJSON (Object o) =
+    ChangeStatus <$> o .: "additions"
+                 <*> o .: "deletions"
+                 <*> o .: "total"
 
 -- | A slightly more generic version of Aeson's @(.:?)@, using `mzero' instead
 -- of `Nothing'.
@@ -483,3 +514,27 @@ findWithDefault def k m =
   case Map.lookup k m of
     Nothing -> def
     Just x  -> x
+
+
+instance ToJSON NewGist where
+  toJSON (NewGist PublicGist (Just description) files) =
+    object ["description" .= description
+           ,"public" .= Bool True
+           ,"files" .= toJSON files]
+
+  toJSON (NewGist PrivateGist Nothing files) =
+    object ["public" .= Bool False
+           ,"files" .= toJSON files]
+
+  toJSON (NewGist PublicGist Nothing files) =
+    object ["public" .= Bool True
+           ,"files" .= toJSON files]
+
+  toJSON (NewGist PrivateGist (Just description) files) =
+    object ["description" .= description
+           ,"public" .= Bool False
+           ,"files" .= toJSON files]
+
+instance ToJSON NewGistFile where
+  toJSON (NewGistFile filename content) =
+    object [(T.pack filename) .= object ["content" .= T.pack content]]

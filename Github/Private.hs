@@ -27,16 +27,22 @@ githubGetWithQueryString paths queryString =
             (buildUrl paths ++ "?" ++ queryString)
             (Nothing :: Maybe Value)
 
+githubPost :: (ToJSON a, Show a, FromJSON b, Show b) => [String] -> a -> IO (Either Error b)
+githubPost paths body =
+  githubAPI (BS.pack "POST")
+            (buildUrl paths)
+            (Just body)
+
 buildUrl :: [String] -> String
 buildUrl paths = "https://api.github.com/" ++ intercalate "/" paths
 
 githubAPI :: (ToJSON a, Show a, FromJSON b, Show b) => BS.ByteString -> String -> Maybe a -> IO (Either Error b)
 githubAPI method url body = do
-  result <- doHttps method url (Just encodedBody)
+  result <- doHttps method url encodedBody
   return $ either (Left . HTTPConnectionError)
                   (parseJson . responseBody)
                   result
-  where encodedBody = RequestBodyLBS $ encode $ toJSON body
+  where encodedBody = (RequestBodyLBS . encode . toJSON) `fmap` body
 
 doHttps :: BS.ByteString -> String -> Maybe (RequestBody IO) -> IO (Either E.IOException (Response LBS.ByteString))
 doHttps method url body = do

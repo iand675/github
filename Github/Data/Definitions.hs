@@ -418,3 +418,42 @@ data DetailedUser = DetailedUser {
   ,detailedUserHtmlUrl :: String
   ,detailedUserLogin :: String
 } deriving (Show, Data, Typeable, Eq, Ord)
+
+data GistPublicity = PublicGist | PrivateGist
+  deriving (Show, Eq)
+
+data NewGist = NewGist GistPublicity (Maybe String) [NewGistFile]
+  deriving (Show, Eq)
+
+data NewGistFile = NewGistFile String String
+  deriving (Show, Eq)
+
+data GistDetail = GistDetail {
+   gistDetailComments :: Int
+  ,gistDetailUpdatedAt :: GithubDate
+  ,gistDetailGitPushUrl :: String
+  ,gistDetailUser :: Maybe GithubUser
+  ,gistDetailPublic :: Bool
+  ,gistDetailHtmlUrl :: String
+  ,gistDetailCreatedAt :: GithubDate
+  ,gistDetailDescription :: String
+  ,gistDetailFiles :: [GistFile]
+  ,gistDetailGitPullUrl :: String
+  ,gistDetailId :: String
+  ,gistDetailUrl :: String
+  ,gistDetailHistory :: [GistHistory]
+} deriving (Show, Data, Typeable, Eq, Ord)
+
+data GistHistory = GistHistory {
+   gistHistoryUser :: Maybe GithubUser
+  ,gistHistoryVersion :: String
+  ,gistHistoryChangeStatus :: ChangeStatus
+  ,gistHistoryCommitedAt :: String
+  ,gistHistoryUrl :: String
+} deriving (Show, Data, Typeable, Eq, Ord)
+
+data ChangeStatus = ChangeStatus {
+   changeStatusAdditions :: Int
+  ,changeStatusDeletions :: Int
+  ,changeStatusTotal :: Int
+} deriving (Show, Data, Typeable, Eq, Ord)
