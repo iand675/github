@@ -1,10 +1,12 @@
-{-# LANGUAGE OverloadedStrings, StandaloneDeriving #-}
+{-# LANGUAGE OverloadedStrings, StandaloneDeriving, GeneralizedNewtypeDeriving #-}
 module Github.Private where
 
 import Github.Data
 import Data.Aeson
 import Data.Attoparsec.ByteString.Lazy
 import Control.Applicative
+import Control.Monad.Reader
+import Control.Monad.Trans
 import Data.List
 import qualified Data.ByteString.Char8 as BS
 import qualified Data.ByteString.Lazy.Char8 as LBS
@@ -15,46 +17,79 @@ import Text.URI
 import qualified Control.Exception as E
 import Data.Maybe (fromMaybe)
 
-githubGet :: (FromJSON b, Show b) => [String] -> IO (Either Error b)
-githubGet = githubGet' Nothing
+data GithubConfig = GithubConfig { auth :: BasicAuth
+                                 , endpoint :: String
+                                 } deriving (Read, Show)
 
-githubGet' :: (FromJSON b, Show b) => Maybe BasicAuth -> [String] -> IO (Either Error b)
-githubGet' auth paths =
-  githubAPI (BS.pack "GET")
-            (buildUrl paths)
-            auth
-            (Nothing :: Maybe Value)
+newtype Github a = Github { fromGithub :: ReaderT GithubConfig IO a }
+                 deriving (Monad, MonadIO, Functor)
 
-githubGetWithQueryString :: (FromJSON b, Show b) => [String] -> String -> IO (Either Error b)
-githubGetWithQueryString = githubGetWithQueryString' Nothing
+class MonadGithub m where
+  getEndpoint :: m String
+  doRequest :: (FromJSON a, Show a) => Request IO -> m (Either Error a)
 
-githubGetWithQueryString' :: (FromJSON b, Show b) => Maybe BasicAuth -> [String] -> String -> IO (Either Error b)
-githubGetWithQueryString' auth paths queryString =
-  githubAPI (BS.pack "GET")
-            (buildUrl paths ++ "?" ++ queryString)
-            auth
-            (Nothing :: Maybe Value)
+instance MonadGithub IO where
+  getEndpoint = return "https://api.github.com/"
+  doRequest request = do
+    result <- (getResponse request >>= return . Right) `E.catches` [
+      -- Re-throw AsyncException, otherwise execution will not terminate on
+      -- SIGINT (ctrl-c).  All AsyncExceptions are re-thrown (not just
+      -- UserInterrupt) because all of them indicate severe conditions and
+      -- should not occur during normal operation.
+      E.Handler (\e -> E.throw (e :: E.AsyncException)),
+      E.Handler (\e -> (return . Left) (e :: E.SomeException))
+      ]
+    return $ either (Left . HTTPConnectionError)
+      (parseJson . responseBody)
+      result    
+  where
+    getResponse request = withManager $ \manager -> httpLbs request manager
+  
+instance MonadGithub Github where
+  getEndpoint = Github $ fmap endpoint ask
+  doRequest = authRequest >=> (liftIO . doRequest)
 
-githubPost :: (ToJSON a, Show a, FromJSON b, Show b) => BasicAuth -> [String] -> a -> IO (Either Error b)
+get, post, patch, put, delete :: ByteString
+get = BS.pack "GET"
+post = BS.pack "POST"
+patch = BS.pack "PATCH"
+put = BS.pack "PUT"
+delete = BS.pack "DELETE"
+
+authRequest :: Request IO -> Github (Request IO)
+authRequest req = do
+ info <- auth <$> ask
+ return $ (uncurry applyBasicAuth info) req
+
+githubGet :: (MonadGithub m, FromJSON a, Show a) => [String] -> m (Either Error a)
+githubGet = buildUrl >=> githubAPI get Nothing
+
+githubGetWithQueryString :: (MonadGithub m, FromJSON a, Show a) => [String] -> String -> m (Either Error a)
+githubGetWithQueryString = githubAPI get
+                           (buildUrl paths ++ "?" ++ queryString)
+                           (Nothing :: Maybe Value)
+
+githubPost :: (FromJSON a, Show a) => [String] -> a -> Github (Either Error b)
+githubPost paths body = buildUrl paths >>= \url -> githubAPI post (Just body)
+
+githubPost :: (ToJSON a, Show a, FromJSON b, Show b) => [String] -> a -> Github (Either Error b)
 githubPost auth paths body =
-  githubAPI (BS.pack "POST")
+  githubAPI post
             (buildUrl paths)
-            (Just auth)
             (Just body)
 
-githubPatch :: (ToJSON a, Show a, FromJSON b, Show b) => BasicAuth -> [String] -> a -> IO (Either Error b)
+githubPatch :: (ToJSON a, Show a, FromJSON b, Show b) => [String] -> a -> Github (Either Error b)
 githubPatch auth paths body =
-  githubAPI (BS.pack "PATCH")
+  githubAPI patch
             (buildUrl paths)
-            (Just auth)
             (Just body)
 
-buildUrl :: [String] -> String
-buildUrl paths = "https://api.github.com/" ++ intercalate "/" paths
+buildUrl :: (Functor m, MonadGithub m) => [String] -> m String
+buildUrl paths = (intercalate "/" . (:paths)) <$> getEndpoint
 
-githubAPI :: (ToJSON a, Show a, FromJSON b, Show b) => BS.ByteString -> String -> Maybe BasicAuth -> Maybe a -> IO (Either Error b)
-githubAPI method url auth body = do
-  result <- doHttps method url auth (Just encodedBody)
+githubAPI :: (ToJSON a, Show a, FromJSON b, Show b) => BS.ByteString -> Maybe a -> String -> IO (Either Error b)
+githubAPI method body url = do
+  result <- doHttps method url (Just encodedBody)
   return $ either (Left . HTTPConnectionError)
                   (parseJson . responseBody)
                   result
@@ -63,29 +98,16 @@ githubAPI method url auth body = do
 -- | user/password for HTTP basic access authentication
 type BasicAuth = (BS.ByteString, BS.ByteString)
 
-doHttps :: Method -> String -> Maybe BasicAuth -> Maybe (RequestBody (ResourceT IO)) -> IO (Either E.SomeException (Response LBS.ByteString))
-doHttps method url auth body = do
-  let requestBody = fromMaybe (RequestBodyBS $ BS.pack "") body
-      (Just uri) = parseUrl url
-      request = uri { method = method
-                    , secure = True
-                    , port = 443
-                    , requestBody = requestBody
-                    , checkStatus = successOrMissing
-                    }
-      authRequest = maybe id (uncurry applyBasicAuth) auth request
-
-  (getResponse authRequest >>= return . Right) `E.catches` [
-      -- Re-throw AsyncException, otherwise execution will not terminate on
-      -- SIGINT (ctrl-c).  All AsyncExceptions are re-thrown (not just
-      -- UserInterrupt) because all of them indicate severe conditions and
-      -- should not occur during normal operation.
-      E.Handler (\e -> E.throw (e :: E.AsyncException)),
-  
-      E.Handler (\e -> (return . Left) (e :: E.SomeException))
-      ]
+makeRequest :: Method -> String -> Maybe (RequestBody (ResourceT IO)) -> Request IO
+makeRequest method url body = uri { method = method
+                                  , secure = True
+                                  , port = 443
+                                  , requestBody = requestBody
+                                  , checkStatus = successOrMissing
+                                  }
   where
-    getResponse request = withManager $ \manager -> httpLbs request manager
+    requestBody = fromMaybe (RequestBodyBS BS.empty) body
+    (Just uri) = parseUrl url
     successOrMissing s@(Status sci _) hs
       | (200 <= sci && sci < 300) || sci == 404 = Nothing
       | otherwise = Just $ E.toException $ StatusCodeException s hs
